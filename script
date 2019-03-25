@@ -1,0 +1,186 @@
+#!/usr/bin/env python
+
+######################  import libraries ######################
+import re
+import cairo
+import argparse
+
+from Bio import Seq 
+from itertools import product
+
+###################### argparse #####################
+
+def get_arguments():
+    parser = argparse.ArgumentParser(description="Python script to create a figure with motif positioning in relationship to exons in sequences")
+    parser.add_argument("-f", "--fasta_file", help="WARNING: fasta file must be reversed complemented prior to running this script OR", required=True, type=str)
+    parser.add_argument("-m", "--motif_file", help="each line of the file is a motif sequence", required=True, type=str)
+
+    return parser.parse_args()
+
+###################### global variables ######################
+#for parsing FASTA and motif file ###
+
+fasta_dict = {} # keys are headers and values are sequence lines
+motif_dict = {} # keys are line in motif file and values are all possible IUPAC combinations
+temp_list = [] # a list to temporarily store motif lines
+motif_list = [] # a list of all potential combinations of motifs from a txt file
+
+# for generating SVG with Cairo
+color_dict={"Red":(255,0,0), "purple":(50,0,50), 
+            "yellow":(255,255,0),"Pink":(50,.5,.7),
+            "Orange":(250,.4,.1), "Green":(0,.9,.3),"Dark Blue":(.094,.094,.42)}
+
+colors=[*color_dict] 
+
+
+###################### functions ######################
+
+from Bio import Seq
+from itertools import product
+
+def IUPAC_motif(motif_seq):
+    '''A function to handle ambiguous DNA sequences in the motif file according to IUPAC definition'''
+    d = Seq.IUPAC.IUPACData.ambiguous_dna_values
+    ra = []
+    for i in product(*[d[j] for j in motif_seq]):
+        ra.append("".join(i))
+    return ra
+
+###################### script  ######################
+
+
+##Part 1: parsing FASTA and motif files 
+#with open("Figure_1.fasta", "r") as fa_fh, open("Fig_1_motifs.txt", "r") as mo_fh:
+with open("INSR.fasta", "r") as fa_fh, open("motifs.txt", "r") as mo_fh:
+    
+    # parsing motif file, handling ambiguity and 
+    # creating a list of possible combinations based on IUPAC criteria
+    
+    for mo_line in mo_fh:
+        mo_line = mo_line.strip("\n") 
+        upper_mo = mo_line.upper()
+        upper_mo = upper_mo.replace("U", "T") #handles RNA motifs
+        temp_list.append(mo_line) # append lines to temporary list
+        exon_motifs= IUPAC_motif(upper_mo) # applies IUPAC function to handle motifs
+        motif_list.append(exon_motifs) #appends combinations to a motif list
+        
+    # parsing fasta file and defining lines of interest
+    for line in fa_fh:
+        line = line.strip() 
+        if line.startswith(">"):
+            ID = line
+            fasta_dict[ID] = "" # all header information
+        else:
+            fasta_dict[ID] += line 
+            
+    
+# extracting coordinates for exons and plotting svg
+for header, seq in fasta_dict.items():
+    header= header.split()
+    geneID=header[0].replace(">","") # will be used as identifier
+    #print(geneID)
+    
+    # exon, getting length and coordinates
+    line_lenght=len(seq) 
+    exon_upper= '[A-Z]+'
+    exon=re.findall(exon_upper,seq)
+    exon_len= ([len(i) for i in exon])
+    exon_start= [(exon.start(0)) for exon in re.finditer(exon_upper, seq)]
+    #print(exon_start)
+
+    
+    # creating Cairo figures using coordinates from line length
+    width=line_lenght+100
+    height=500
+    surface=cairo.SVGSurface(geneID+".svg", width, height) # aka. destination; sets canvas dimensions for each gene from fasta header
+    ctx=cairo.Context(surface) # Context defines a cairo object that will be edited
+    
+    # drawing a line representing introns (pattern1)
+    ctx.set_line_width(5) 
+    ctx.move_to(0,75) # positioning
+    ctx.line_to((line_lenght), 75) # line will be equal to length of seq
+    ctx.stroke() # strokes current path according to line width, line join, line cap and dash settings
+    pattern1=cairo.LinearGradient(0.0, 0.0, 0.0, 1.0) # 100% 
+    pattern1.add_color_stop_rgba(0,.65,.65, .65,1) #Gets the color and offset information for all color stops specified in the given gradient pattern.
+    
+    # draw exon given the coordinates extracted of start and length
+    for exon_starts, exon_lengths in zip(exon_start, exon_len):
+        ctx.rectangle(int(exon_starts), 25, int(exon_lengths), 100)
+        ctx.set_source(pattern1) #based on line_lenght
+        ctx.fill() # drawing operator; fills current path according to fill rule (The default fill rule is cairo.FillRule.WINDING)
+        ctx.stroke() # drawing operator; strokes current path according to current line width (set to 5)
+    
+    upper_seq=seq.upper() # define Captalized text from FASTA using seq and saving as a variable outside counter 
+    
+    # define colors for multiple motifs, set shape, legend and font parameters for pattern2 (motif marks)
+    ctr=0
+    for motif in motif_list:
+        ctr_color=colors[ctr] # colors is a list of unpacked items from color_dict
+        motif_color=color_dict[ctr_color]
+
+        pattern2=cairo.LinearGradient(0, 0, 0, 1)
+        pattern2.add_color_stop_rgba(1,motif_color[0],motif_color[1],motif_color[2], .5) 
+
+        legend_ctr=ctr*25
+        ctx.rectangle(0,(180+legend_ctr),15,15)
+        ctx.set_source(pattern2)
+        ctx.fill()
+        ctx.select_font_face('Courier', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        ctx.set_font_size(20)
+
+        ctx.move_to(20, 195+ legend_ctr)
+        ctx.set_source_rgb(0,0,0)
+        ctx.show_text(temp_list[ctr])
+        ctx.set_source(pattern2)
+        ctx.fill()
+        ctx.stroke()
+
+        ctr+=1
+        for item in motif:
+            pattern_motif=item
+            motif_start=[(m.start(0)) for m in re.finditer(pattern_motif, upper_seq)]
+            motif_length_all= re.findall(pattern_motif, upper_seq)
+            motif_lenght=([len(i) for i in motif_length_all])
+            for mo_start, mo_length in zip(motif_start, motif_lenght):
+                ctx.rectangle(int(mo_start), 25, int(mo_length), 100)#x(float),y(float), width, height
+                ctx.set_source(pattern2)
+                ctx.fill()
+                ctx.stroke()
+                
+    #convert motif_start into string so I can print it
+    my_list=motif_start
+    #print(my_list)
+    my_string= ",".join(str(i) for i in my_list)
+    #print(my_string)
+    ctx.fill()
+    ctx.select_font_face('Times', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+    ctx.set_font_size(20)
+    ctx.move_to(200, 195+ legend_ctr)
+    ctx.set_source_rgb(0,0,0)
+    ctx.show_text(my_string)
+    
+    # text legends
+    ctx.select_font_face('Times', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+    ctx.set_font_size(20)
+    ctx.move_to(200, 165)
+    ctx.set_source_rgb(0,0,0)
+    ctx.show_text("motif starting positions:")
+    
+    #printing exon legends
+    ctx.rectangle(0, 150, 15, 15)
+    ctx.set_source(pattern1)
+    ctx.fill()
+    ctx.select_font_face('Times', cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+    ctx.set_font_size(20)
+    ctx.move_to(20, 165)
+    ctx.set_source_rgb(0,0,0)
+    ctx.show_text("Exon")
+    
+    #printing intron legend
+    ctx.move_to(100, 160)
+    ctx.line_to(80, 160)
+    ctx.stroke()
+    ctx.move_to(110,165)
+    ctx.show_text("Intron")
+    
+    surface.write_to_png(geneID+".png") #output to a png file
